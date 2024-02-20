@@ -5,39 +5,39 @@
 // Package gzran implements a seekable gzip.Reader that indexes offsets within
 // the file as reading progresses, to make subsequent seeking more performant.
 //
-//   gzr, err := gzran.NewReader(r)
-//   if err != nil {
-//     panic(err)
-//   }
-//   // Seek forward within the file, indexing as we go.
-//   if _, err := gzr.Seek(n, io.SeekStart); err != nil {
-//     panic(err)
-//   }
-//   // Seek backward, using the on-the-fly index to do so efficiently.
-//   if _, err := gzr.Seek(n - 128000, io.SeekStart); err != nil {
-//     panic(err)
-//   }
+//	gzr, err := gzran.NewReader(r)
+//	if err != nil {
+//	  panic(err)
+//	}
+//	// Seek forward within the file, indexing as we go.
+//	if _, err := gzr.Seek(n, io.SeekStart); err != nil {
+//	  panic(err)
+//	}
+//	// Seek backward, using the on-the-fly index to do so efficiently.
+//	if _, err := gzr.Seek(n - 128000, io.SeekStart); err != nil {
+//	  panic(err)
+//	}
 //
 // The Index can also be persisted and reused later:
 //
-//   // Read through entire file to index it, and then save the Index.
-//   if _, err := io.Copy(ioutil.Discard, gzr); err != nil {
-//     panic(err)
-//   }
-//   if err := gzr.Index.WriteTo(f); err != nil {
-//     panic(err)
-//   }
+//	// Read through entire file to index it, and then save the Index.
+//	if _, err := io.Copy(ioutil.Discard, gzr); err != nil {
+//	  panic(err)
+//	}
+//	if err := gzr.Index.WriteTo(f); err != nil {
+//	  panic(err)
+//	}
 //
-//   // Create a new gzip.Reader and load the Index to use it.
-//   gzr, err := gzran.NewReader(r)
-//   if err != nil {
-//     panic(err)
-//   }
-//   gzr.Index, err = gzran.LoadIndex(f)
-//   if err != nil {
-//     panic(err)
-//   }
-//   // Seek and read as desired using the Index.
+//	// Create a new gzip.Reader and load the Index to use it.
+//	gzr, err := gzran.NewReader(r)
+//	if err != nil {
+//	  panic(err)
+//	}
+//	gzr.Index, err = gzran.LoadIndex(f)
+//	if err != nil {
+//	  panic(err)
+//	}
+//	// Seek and read as desired using the Index.
 package gzran
 
 import (
@@ -48,7 +48,7 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/timpalpant/gzran/internal/flate"
+	"github.com/prequel-dev/gzran/internal/flate"
 )
 
 const (
@@ -115,19 +115,15 @@ type Header struct {
 // marking the end of the data.
 type Reader struct {
 	Header // valid after NewReader
-	Index  // valid after NewReader
+	Index
 
 	r            io.ReadSeeker
 	bufR         *tellReader
 	decompressor io.ReadCloser
-	digest       uint32 // CRC-32, IEEE polynomial (section 8)
-	size         uint32 // Uncompressed size (section 2.3.1)
-	buf          [512]byte
-	err          error
 
+	buf           [512]byte
+	err           error
 	pos           int64 // Current offset of Read() within the uncompressed data.
-	furthestRead  int64
-	checkedDigest bool
 	indexInterval int64
 }
 
@@ -157,10 +153,7 @@ func NewReaderInterval(r io.ReadSeeker, indexInterval int64) (*Reader, error) {
 	}
 
 	z := &Reader{
-		Index: Index{{
-			CompressedOffset:   bufR.Offset(),
-			UncompressedOffset: 0,
-		}},
+		Index:         NewIndex(bufR.Offset()),
 		r:             r,
 		bufR:          bufR,
 		indexInterval: indexInterval,
@@ -189,7 +182,7 @@ func (z *Reader) readString() (string, error) {
 		}
 		if z.buf[i] == 0 {
 			// Digest covers the NUL terminator.
-			z.digest = crc32.Update(z.digest, crc32.IEEETable, z.buf[:i+1])
+			z.Digest = crc32.Update(z.Digest, crc32.IEEETable, z.buf[:i+1])
 
 			// Strings are ISO 8859-1, Latin-1 (RFC 1952, section 2.3.1).
 			if needConv {
@@ -228,19 +221,19 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 	}
 	// z.buf[8] is XFL and is currently ignored.
 	hdr.OS = z.buf[9]
-	prevDigest := z.digest
-	z.digest = crc32.ChecksumIEEE(z.buf[:10])
+	prevDigest := z.Digest
+	z.Digest = crc32.ChecksumIEEE(z.buf[:10])
 
 	if flg&flagExtra != 0 {
 		if _, err = io.ReadFull(z.bufR, z.buf[:2]); err != nil {
 			return hdr, noEOF(err)
 		}
-		z.digest = crc32.Update(z.digest, crc32.IEEETable, z.buf[:2])
+		z.Digest = crc32.Update(z.Digest, crc32.IEEETable, z.buf[:2])
 		data := make([]byte, le.Uint16(z.buf[:2]))
 		if _, err = io.ReadFull(z.bufR, data); err != nil {
 			return hdr, noEOF(err)
 		}
-		z.digest = crc32.Update(z.digest, crc32.IEEETable, data)
+		z.Digest = crc32.Update(z.Digest, crc32.IEEETable, data)
 		hdr.Extra = data
 	}
 
@@ -264,12 +257,12 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 			return hdr, noEOF(err)
 		}
 		digest := le.Uint16(z.buf[:2])
-		if digest != uint16(z.digest) {
+		if digest != uint16(z.Digest) {
 			return hdr, ErrHeader
 		}
 	}
 
-	z.digest = prevDigest
+	z.Digest = prevDigest
 	z.decompressor = flate.NewReader(z.bufR)
 	return hdr, nil
 }
@@ -285,12 +278,12 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 	z.pos += int64(n)
 	// Is this read past the furthest point we have read before?
 	// If so then update size/digest with new data.
-	if z.pos > z.furthestRead {
-		startIdx := z.furthestRead - (z.pos - int64(n))
+	if z.pos > z.FurthestRead {
+		startIdx := z.FurthestRead - (z.pos - int64(n))
 		newData := p[startIdx:n]
-		z.digest = crc32.Update(z.digest, crc32.IEEETable, newData)
-		z.size += uint32(len(newData))
-		z.furthestRead = z.pos
+		z.Digest = crc32.Update(z.Digest, crc32.IEEETable, newData)
+		z.Size += uint32(len(newData))
+		z.FurthestRead = z.pos
 	}
 	if z.pos >= z.Index.lastUncompressedOffset()+z.indexInterval {
 		z.addPointToIndex()
@@ -300,22 +293,37 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 		return n, z.err
 	}
 
+	// SGC: If already checked the digest, short-circuit
+	if z.Index.DigestDone {
+
+		// Typically a reader allows a short-read at end of file.
+		// Fix this up to behave like a normal file.
+		// if n > 0 {
+		// 	return n, nil
+		// }
+
+		return n, io.EOF
+	}
+
 	// Finished file; check checksum and size.
 	if _, err := io.ReadFull(z.bufR, z.buf[:8]); err != nil {
 		z.err = noEOF(err)
 		return n, z.err
 	}
-	if z.checkedDigest {
-		return n, io.EOF
-	}
+
 	digest := le.Uint32(z.buf[:4])
 	size := le.Uint32(z.buf[4:8])
-	if digest != z.digest || size != z.size {
+	if digest != z.Digest || size != z.Size {
 		z.err = ErrChecksum
 		return n, z.err
 	}
-	z.checkedDigest = true
-	z.digest, z.size = 0, 0
+	z.DigestDone = true
+
+	// // SGC see above
+	// if n > 0 {
+	// 	return n, nil
+	// }
+
 	return n, io.EOF
 }
 
@@ -331,7 +339,7 @@ func (z *Reader) addPointToIndex() {
 		DecompressorState:  state,
 	}
 
-	z.Index = append(z.Index, p)
+	z.Points = append(z.Points, p)
 }
 
 // Seek implements io.Seeker.

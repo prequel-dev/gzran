@@ -1,3 +1,3 @@
-module github.com/timpalpant/gzran
+module github.com/prequel-dev/gzran
 
 go 1.15
